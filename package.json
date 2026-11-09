@@ -1,0 +1,10 @@
+{
+  "name": "pi-chains",
+  "version": "0.1.0",
+  "description": "Chains for pi: one model per role that falls back through an ordered list of models when an account runs out of usage.",
+  "license": "MIT",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./extensions"] },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "scripts": { "test": "node --experimental-strip-types --no-warnings --test tests/*.test.ts" }
+}
