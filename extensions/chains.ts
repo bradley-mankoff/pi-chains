@@ -429,7 +429,10 @@ const register = (pi: ExtensionAPI, path: string, role: string, entries: Chain):
 /**
  * Mark an account whose final error says it ran out, then ask pi for one more request so
  * the next seat or the next entry answers. The models are already registered; this handler
- * only reads ctx and files, never pi.*.
+ * only reads ctx and files, never pi.*. Its notice reaches a TUI session as the
+ * display:true chat message below, so it stays off stderr there: in the alternate
+ * screen a mid-session stderr write lands where the cursor is, over the input box,
+ * until the next render wipes it. Other modes keep stderr, their only channel.
  */
 const onBeforeSettle = (
 	event: AgentBeforeSettleEvent,
@@ -452,11 +455,15 @@ const onBeforeSettle = (
 		markUsedUp(account, mark);
 	} catch (error) {
 		// Without the mark the next request would reach the same used-up account again.
-		console.error(`chains: cannot mark ${account} used up in ${accountsPath()}: ${(error as Error).message}; stopping`);
+		if (ctx.mode !== "tui") {
+			console.error(`chains: cannot mark ${account} used up in ${accountsPath()}: ${(error as Error).message}; stopping`);
+		}
 		return undefined;
 	}
 	const resetsAt = new Date(mark).toISOString();
-	console.error(`chains: ${account} is used up until ${resetsAt}; continuing on chain/${model.id}, on the next seat or the next entry`);
+	if (ctx.mode !== "tui") {
+		console.error(`chains: ${account} is used up until ${resetsAt}; continuing on chain/${model.id}, on the next seat or the next entry`);
+	}
 	return {
 		entries: [
 			{
