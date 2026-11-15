@@ -26,6 +26,12 @@
  * When no entry is left, the request fails with a message naming each account and its reset
  * time.
  *
+ * A request that fails for any other reason, such as a reset connection, an overloaded server or
+ * a rate-limit warning, marks no account, because the account may still have usage. Instead this
+ * extension skips that seat for FAILED_SEAT_COOLDOWN in this pi process and continues on the next
+ * seat or entry. A turn stops once every distinct seat of the Chain has failed in it, so a Chain
+ * that fails everywhere ends with the last error instead of looping.
+ *
  * Every role's model is registered once, when pi loads this extension, and never from a
  * session handler: a handler that calls pi.* breaks the next node of a Run, because Archon
  * shares one loaded extension between its nodes (pi-agent/README.md). The settle handler
@@ -80,6 +86,15 @@ type Mark = number;
 type Marks = Record<string, Mark>;
 
 const HOUR = 60 * 60 * 1000;
+
+/**
+ * How long a seat that failed with an error other than a usage limit is skipped, in this pi process.
+ * Five minutes: a dead endpoint, such as one a hotel network resets, is not retried before every
+ * request, and a transient failure is retried soon after.
+ */
+const FAILED_SEAT_COOLDOWN = 5 * 60 * 1000;
+/** Until when each seat that failed with a non-usage error is skipped, keyed by seatKey. */
+const failedUntil = new Map<string, number>();
 
 /**
  * The Chains file: pi's agent folder, PI_CODING_AGENT_DIR when set and ~/.pi/agent otherwise.
@@ -359,6 +374,13 @@ const resetAfter = (message: string, now: number): number => {
 
 const isUsageLimit = (message: string): boolean => USAGE_LIMIT_MESSAGES.some((pattern) => pattern.test(message));
 
+/** The "provider/model" a seat sends requests to, the key a failed seat is recorded under. */
+const seatKey = (entries: Chain, at: SeatRef): string => `${accountAt(entries, at)}/${entries[at.entry].model}`;
+
+/** How many distinct seats a Chain has: the same model on two logins is two seats. */
+const distinctSeats = (entries: Chain): number =>
+	new Set(entries.flatMap((entry, index) => entry.seats.map((_, seat) => seatKey(entries, { entry: index, seat })))).size;
+
 /** The turn a session already took, when the state pi keeps on its branch holds one. */
 const turnOf = (state: unknown): number | undefined => (isObject(state) ? readTurn(state.turn) : undefined);
 
@@ -379,6 +401,8 @@ const register = (pi: ExtensionAPI, path: string, role: string, entries: Chain):
 			const marks = marksOf(readAccountsFile());
 			// Whether the account behind one seat has usage at this instant.
 			const hasUsage = (at: SeatRef): boolean => !isUsedUp(marks, accountAt(entries, at), now);
+			// A seat that failed with a non-usage error is skipped until its cooldown ends, unless no other seat is left.
+			const cooling = (at: SeatRef): boolean => (failedUntil.get(seatKey(entries, at)) ?? 0) > now;
 			// The model that answered last, or the one a retry failed on. Staying on it keeps the
 			// prompt cache, and a retry on the session's first request keeps the seat it started on.
 			const last = (request.reason === "retry" ? request.failed?.model : undefined) ?? request.previous?.model;
@@ -396,7 +420,7 @@ const register = (pi: ExtensionAPI, path: string, role: string, entries: Chain):
 			// Stay on the seat that answered last while its account has usage: switching costs the
 			// prompt cache. Once it runs out, try the entry's other seats, which keep the same
 			// model, then the Chain's later entries, then round the Chain again in case a mark expired.
-			let chosen = previous && hasUsage(previous) ? previous : undefined;
+			let chosen = previous && hasUsage(previous) && !cooling(previous) ? previous : undefined;
 			if (chosen === undefined) {
 				const order: SeatRef[] = [];
 				const first = previous ? previous.entry : 0;
@@ -407,7 +431,7 @@ const register = (pi: ExtensionAPI, path: string, role: string, entries: Chain):
 						order.push({ entry, seat: (from + j) % entries[entry].seats.length });
 					}
 				}
-				chosen = order.find(hasUsage);
+				chosen = order.find((at) => hasUsage(at) && !cooling(at)) ?? order.find(hasUsage);
 			}
 			if (chosen === undefined) throw new Error(usedUpMessage(marks));
 			const entry = entries[chosen.entry];
@@ -424,6 +448,46 @@ const register = (pi: ExtensionAPI, path: string, role: string, entries: Chain):
 			return { model, thinkingLevel: entry.thinking, state };
 		},
 	});
+};
+
+/**
+ * An error that is not a usage limit, such as a reset connection or an overloaded server. The
+ * account may still have usage, so it gets no mark. The seat that failed is skipped for
+ * FAILED_SEAT_COOLDOWN, and pi is asked for one more request that goes to the next seat or entry.
+ */
+const fallFromError = (
+	event: AgentBeforeSettleEvent,
+	ctx: ExtensionContext,
+	entries: Chain,
+	seat: SeatRef,
+	error: string,
+): AgentBeforeSettleEventResult | undefined => {
+	const model = ctx.model;
+	if (!model) return undefined;
+	// Every failure of this turn, back to the user's message: a retry of one seat counts once.
+	const failedThisTurn = new Set<string>();
+	for (const message of [...event.context.contextMessages].reverse()) {
+		if (message.role === "user") break;
+		if (message.role === "assistant" && message.stopReason === "error") failedThisTurn.add(`${message.provider}/${message.model}`);
+	}
+	if (failedThisTurn.size >= distinctSeats(entries)) return undefined;
+	const key = seatKey(entries, seat);
+	failedUntil.set(key, Date.now() + FAILED_SEAT_COOLDOWN);
+	const reason = error.split("\n")[0].slice(0, 200);
+	if (ctx.mode !== "tui") {
+		console.error(`chains: ${key} failed (${reason}); skipping it for ${FAILED_SEAT_COOLDOWN / 60000} minutes, continuing on chain/${model.id}`);
+	}
+	return {
+		entries: [
+			{
+				type: "custom_message",
+				customType: "chains",
+				content: `chain/${model.id}: the request to ${key} failed with: ${reason}. This is a notice, not a new task: the session continues on the next seat or entry of the Chain and answers the message the user sent.`,
+				display: true,
+			},
+		],
+		continue: true,
+	};
 };
 
 /**
@@ -446,9 +510,9 @@ const onBeforeSettle = (
 	if (!entries) return undefined;
 	const last = [...event.context.contextMessages].reverse().find((message) => message.role === "assistant");
 	if (!last || last.role !== "assistant" || last.stopReason !== "error" || !last.errorMessage) return undefined;
-	if (!isUsageLimit(last.errorMessage)) return undefined;
 	const seat = seatRefOf(entries, last);
 	if (!seat) return undefined;
+	if (!isUsageLimit(last.errorMessage)) return fallFromError(event, ctx, entries, seat, last.errorMessage);
 	const account = accountAt(entries, seat);
 	const mark = resetAfter(last.errorMessage, Date.now());
 	try {

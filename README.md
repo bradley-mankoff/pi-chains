@@ -1,6 +1,6 @@
 # pi-chains
 
-Chains for pi: one model per role that falls back through an ordered list of models when an account runs out of usage.
+Chains for pi: one model per role that falls back through an ordered list of models when a request fails, marking an account used up when it runs out of usage.
 
 The Chains file is `<agent dir>/chains.json`, where the agent dir is `PI_CODING_AGENT_DIR` when set and `~/.pi/agent` otherwise. The used-up account marks are kept in `${XDG_STATE_HOME:-~/.local/state}/pi-chains/accounts.json`, one file for every pi session on the Mac whatever its agent dir.
 

@@ -644,7 +644,55 @@ test("an error that is not a usage limit keeps pi's normal retry and marks no ac
 	assert.deepEqual(run.accounts, {});
 });
 
-test("a Claude rate-limit warning does not mark the account used up", () => {
+test("an error that is not a usage limit moves the session to the next entry, and marks no account", () => {
+	const run = runPi(["-p", "--model", "chain/work", "say hello"], {
+		chainsFile: JSON.stringify({ work: chains.work }),
+		failures: { "test/alpha": "fetch failed: socket reset" },
+		settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 100 } },
+	});
+	// pi retries the failure on the same model; then the session moves to the next entry.
+	assertReached(run, [
+		["test", "alpha", "high"],
+		["test", "alpha", "high"],
+		["test", "beta", "max"],
+	]);
+	assert.match(run.stdout, /answered by beta/);
+	assert.deepEqual(run.accounts, {});
+});
+
+test("a Chain whose every seat fails with a non-usage error ends the turn with an error, not a loop", () => {
+	const run = runPi(["-p", "--model", "chain/work", "say hello"], {
+		chainsFile: JSON.stringify({ work: chains.work }),
+		failures: { "test/alpha": "fetch failed: socket reset", "test/beta": "fetch failed: socket reset" },
+		settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 100 } },
+		expectFailure: true,
+	});
+	assert.notEqual(run.status, 0);
+	assertReached(run, [
+		["test", "alpha", "high"],
+		["test", "alpha", "high"],
+		["test", "beta", "max"],
+		["test", "beta", "max"],
+	]);
+	assert.deepEqual(run.accounts, {});
+});
+
+test("a Chain with one entry that fails with a non-usage error stops after pi's retry", () => {
+	const run = runPi(["-p", "--model", "chain/scout", "say hello"], {
+		chainsFile: JSON.stringify({ scout: [{ model: "test/alpha", thinking: "max" }] }),
+		failures: { "test/alpha": "fetch failed: socket reset" },
+		settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 100 } },
+		expectFailure: true,
+	});
+	assert.notEqual(run.status, 0);
+	assertReached(run, [
+		["test", "alpha", "max"],
+		["test", "alpha", "max"],
+	]);
+	assert.deepEqual(run.accounts, {});
+});
+
+test("a Claude rate-limit warning moves the session to the fallback, and marks no account", () => {
 	const limit = limitFor("claude-bridge");
 	const warnings = [
 		"Claude rate limit warning: 98% used (five_hour)",
@@ -655,13 +703,13 @@ test("a Claude rate-limit warning does not mark the account used up", () => {
 			chainsFile: JSON.stringify({ work: chainFor(limit) }),
 			failures: { [`${limit.account}/${limit.model}`]: warning },
 			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 100 } },
-			expectFailure: true,
 		});
-		assert.notEqual(run.status, 0, warning);
-		// pi retries the warning, and the session stays on the account; it never reaches the fallback.
+		// pi retries the warning on the same model, then the session moves to the fallback. The
+		// account is not marked: a warning comes before the account is used up.
 		assertReached(run, [
 			[limit.account, limit.model, "high"],
 			[limit.account, limit.model, "high"],
+			[limit.fallback.account, limit.fallback.model, "max"],
 		]);
 		assert.deepEqual(run.accounts, {}, warning);
 	}
