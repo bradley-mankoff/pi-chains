@@ -120,8 +120,6 @@ const USAGE_LIMIT_MESSAGES: RegExp[] = [
 	// The error types in pi-ai's NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN, and the
 	// available-balance text its comment names for OpenCode Go's rolling and weekly limits.
 	/GoUsageLimitError|FreeUsageLimitError|available balance/i,
-	// Claude's "You're out of extra usage", which the bridge passes on as an API error 400.
-	/out of extra usage/i,
 ];
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
