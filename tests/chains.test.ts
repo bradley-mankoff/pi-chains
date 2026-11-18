@@ -78,6 +78,7 @@ const chainFor = (limit: RecordedLimit) => [
 const seatsEntry = (model: string, seats: string[], thinking = "high") => ({ model, seats, thinking });
 /** The two ChatGPT seats, as the work Mac's Chains name them. */
 const SEATS = ["codex-a", "codex-b"];
+const HOUR_MS = 60 * 60 * 1000;
 /** Both seats failing on one model, each with its own login's recorded usage-limit message. */
 const bothSeatsUsedUp = (model: string): Record<string, string> =>
 	Object.fromEntries(SEATS.map((seat) => [`${seat}/${model}`, limitFor(seat).message]));
@@ -201,6 +202,8 @@ const runPiIn = (workspace: Workspace, args: string[], options: Options = {}): P
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env,
+		// A session that loops on a failing seat never exits; the timeout turns that into a failed test.
+		timeout: 60_000,
 	});
 	if (!options.expectFailure) assert.equal(result.status, 0, result.stderr || result.stdout);
 	const requests = readJsonLines<Request>(requestLog);
@@ -675,6 +678,26 @@ test("a Chain whose every seat fails with a non-usage error ends the turn with a
 		["test", "beta", "max"],
 	]);
 	assert.deepEqual(run.accounts, {});
+});
+
+test("a non-usage error whose Chain has no other seat with usage stops after pi's retry, not a loop", () => {
+	const run = runPi(["-p", "--model", "chain/pm", "say hello"], {
+		chainsFile: JSON.stringify({
+			pm: [
+				{ model: "claude-bridge/claude-opus-5-5", thinking: "medium" },
+				{ model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
+			],
+		}),
+		accounts: { "opencode-go": new Date(Date.now() + HOUR_MS).toISOString() },
+		failures: { "claude-bridge/claude-opus-5-5": "fetch failed: socket reset" },
+		settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 100 } },
+		expectFailure: true,
+	});
+	assert.notEqual(run.status, 0);
+	assertReached(run, [
+		["claude-bridge", "claude-opus-5-5", "medium"],
+		["claude-bridge", "claude-opus-5-5", "medium"],
+	]);
 });
 
 test("a Chain with one entry that fails with a non-usage error stops after pi's retry", () => {

@@ -120,6 +120,8 @@ const USAGE_LIMIT_MESSAGES: RegExp[] = [
 	// The error types in pi-ai's NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN, and the
 	// available-balance text its comment names for OpenCode Go's rolling and weekly limits.
 	/GoUsageLimitError|FreeUsageLimitError|available balance/i,
+	// Claude's "You're out of extra usage", which the bridge passes on as an API error 400.
+	/out of extra usage/i,
 ];
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -471,6 +473,17 @@ const fallFromError = (
 		if (message.role === "assistant" && message.stopReason === "error") failedThisTurn.add(`${message.provider}/${message.model}`);
 	}
 	if (failedThisTurn.size >= distinctSeats(entries)) return undefined;
+	// When every seat whose account has usage already failed in this turn, the router could only
+	// send the next request back to a failed seat, so the turn ends here. Without this a Chain
+	// whose other accounts were used up retried its one live seat without end (2026-11-18).
+	const marks = marksOf(readAccountsFile());
+	const now = Date.now();
+	const fresh = entries.some((item, entry) =>
+		item.seats.some(
+			(account, index) => !isUsedUp(marks, account, now) && !failedThisTurn.has(seatKey(entries, { entry, seat: index })),
+		),
+	);
+	if (!fresh) return undefined;
 	const key = seatKey(entries, seat);
 	failedUntil.set(key, Date.now() + FAILED_SEAT_COOLDOWN);
 	const reason = error.split("\n")[0].slice(0, 200);

@@ -43,5 +43,14 @@
 		"message": "FreeUsageLimitError",
 		"reset": { "kind": "one-hour" },
 		"source": "The error type named in pi-ai 1.3.0's NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN (node_modules/@earendil-works/pi-ai/dist/utils/retry.js, line 8); no OpenCode Go Run log was on hand, and the type's text names no reset time."
+	},
+	{
+		"id": "claude-bridge extra usage",
+		"account": "claude-bridge",
+		"model": "claude-opus-5-5",
+		"fallback": { "account": "opencode-go", "model": "deepseek-v4.1-flash" },
+		"message": "API Error: 400 You're out of extra usage. Add more at claude.ai/settings/usage and keep going. (no plan limit was reported as reached, so Anthropic may have read the system prompt as a third-party app)",
+		"reset": { "kind": "one-hour" },
+		"source": "The work Mac's Project Manager pane, 2026-11-18, pasted by the Human: claude-bridge returned this for every request, and chain/pm retried it without end because the text matched no usage-limit pattern and the Chain's other account was already used up. The text names no reset time."
 	}
 ]
